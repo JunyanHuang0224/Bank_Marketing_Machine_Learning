@@ -1,0 +1,493 @@
+---
+title: "Bank Marketing (Original Data)"
+output: html_notebook
+---
+
+# Introduction
+## Project Objective
+This project aims to build a workable model to predict if a client will subscribe a term deposit. Key features of clients who did subscribe a term deposit will be discovered and used for marketing. For example, what are the potential client group in terms of age, job, previous relationship with the bank, etc. 
+
+## Project Drawback
+The project works on the original data set with 45211 observations and 17 attributes. The drawback of using the original data set is: the data set is unbalanced in the class label, with way more than no than yes. This gives the classification model a good accuracy but a bad specificity (the rate capturing the yes class.) Thus another project is created to work on the the banlanced data set generated from the original set.
+
+## About the attributes
+Input variables:
+   # bank client data:
+   1 - age (numeric)
+   2 - job : type of job (categorical: "admin.","unknown","unemployed","management","housemaid","entrepreneur","student",
+                                       "blue-collar","self-employed","retired","technician","services") 
+   3 - marital : marital status (categorical: "married","divorced","single"; note: "divorced" means divorced or widowed)
+   4 - education (categorical: "unknown","secondary","primary","tertiary")
+   5 - default: has credit in default? (binary: "yes","no")
+   6 - balance: average yearly balance, in euros (numeric) 
+   7 - housing: has housing loan? (binary: "yes","no")
+   8 - loan: has personal loan? (binary: "yes","no")
+   # related with the last contact of the current campaign:
+   9 - contact: contact communication type (categorical: "unknown","telephone","cellular") 
+  10 - day: last contact day of the month (numeric)
+  11 - month: last contact month of year (categorical: "jan", "feb", "mar", ..., "nov", "dec")
+  12 - duration: last contact duration, in seconds (numeric)
+   # other attributes:
+  13 - campaign: number of contacts performed during this campaign and for this client (numeric, includes last contact)
+  14 - pdays: number of days that passed by after the client was last contacted from a previous campaign (numeric, -1 means client was not previously contacted)
+  15 - previous: number of contacts performed before this campaign and for this client (numeric)
+  16 - poutcome: outcome of the previous marketing campaign (categorical: "unknown","other","failure","success")
+
+  Output variable (desired target):
+  17 - y - has the client subscribed a term deposit? (binary: "yes","no")
+
+For source and attribute info of the data set, please refer to https://archive.ics.uci.edu/ml/datasets/bank+marketing
+
+
+# Understand the data
+
+Import the data set
+```{r}
+library(tidyverse)
+bank <- read_csv2("/home/junyan26/DATA/Bank_Marketing/bank/bank-full.csv", col_types = cols())
+```
+
+```{r}
+nrow(bank)
+ncol(bank)
+```
+
+```{r}
+print(head(bank))
+```
+
+```{r}
+summary(bank)
+```
+
+```{r}
+is_yes <- bank[bank$y == "yes", 17]
+n_yes <- nrow(is_yes)
+#n_yes
+is_no <- bank[bank$y == "no", 17]
+n_no <- nrow(is_no)
+#n_no
+n_yes_no <- data.frame(c(n_yes, n_no))
+n_yes_no$class <- c("yes", "no")
+colnames(n_yes_no) <- c("count", "class")
+n_yes_no <- n_yes_no[, c(2, 1)]
+n_yes_no
+```
+
+```{r}
+library(ggplot2)
+ggplot(data=n_yes_no, aes(x=reorder(class, count), y=count, fill=reorder(class, count))) +
+  geom_bar(stat="identity", width=0.5)+ 
+  theme_classic() + ylab("Count") + xlab("classes in target variable \"y\"") +
+  ggtitle("Compare the Number of the Classes") +
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold"), 
+        axis.text.x = element_text(hjust = 0.5, face="bold", size=14))+
+  guides(fill=FALSE, color=FALSE)
+```
+
+
+```{r}
+sapply(bank, function(x) sum(is.na(x)))
+```
+
+There is no missing data in the data set.
+
+__Turn categorical variables into numerical.__
+
+```{r}
+sapply(bank, class)
+```
+
+```{r}
+c <- colnames(dplyr::select_if(bank, is.character))
+bank[c] <- lapply(bank[c], factor)
+sapply(bank, class)
+```
+
+```{r}
+bank_numeric <- bank
+bank_numeric[c] <- lapply(bank_numeric[c], factor)
+sapply(bank_numeric, class)
+```
+
+```{r}
+must_convert <- sapply(bank_numeric,is.factor)
+#must_convert
+bank_numeric_temp <- sapply(bank_numeric[,must_convert],unclass)
+bank_numeric <- cbind(bank_numeric[,!must_convert],bank_numeric_temp)
+```
+
+Reorder the column names
+```{r}
+cnames = colnames(bank)
+bank_numeric <- bank_numeric[, cnames]
+```
+
+"bank_numeric" is a dataset generated from "bank" and with all numerical data.
+
+__Examine the correlation coefficient between variables.__
+
+```{r}
+cormat <- round(cor(bank_numeric),2)
+```
+
+```{r}
+library(reshape2)
+melted_cormat <- melt(cormat)
+```
+
+```{r}
+# Get lower triangle of the correlation matrix
+  get_lower_tri <- function(cormat){
+    cormat[upper.tri(cormat)] <- NA
+    return(cormat)
+  }
+  # Get upper triangle of the correlation matrix
+  get_upper_tri <- function(cormat){
+    cormat[lower.tri(cormat)] <- NA
+    return(cormat)
+  }
+  
+upper_tri <- get_upper_tri(cormat)
+
+
+# Melt the correlation matrix
+library(reshape2)
+melted_cormat <- melt(upper_tri, na.rm = TRUE)
+# Heatmap
+library(ggplot2)
+ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "blue", high = "red", mid = "beige", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, 
+    size = 12, hjust = 1), axis.text.y = element_text(vjust = 0.5, 
+    size = 12, hjust = 1))+
+ coord_fixed() + 
+geom_text(aes(Var2, Var1, label = value), color = "black", size = 2) +
+theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.border = element_blank(),
+  panel.background = element_blank(),
+  axis.ticks = element_blank(),
+  legend.justification = c(1, 0),
+  legend.position = c(0.6, 0.7),
+  legend.direction = "horizontal")+
+  guides(fill = guide_colorbar(barwidth = 7, barheight = 1,
+                title.position = "top", title.hjust = 0.5))
+```
+
+The correlation between variables are not very strong overall. Still, we have some higher correlated variable pair: pday and poutcome. 
+
+The correlation for each variable and the output variable "y" is not strong, which makes the project a little difficult.
+
+
+__Scatterplot Matrix__
+
+The points in a scatterplot matrix can be colored by the class label in classification problems. This can help to spot clear (or unclear) separation of classes and perhaps give an idea of how difficult the problem may.
+
+```{r, fig.height=30, fig.width=30}
+#pairs(y~., data=bank_numeric, col=bank_numeric$y)
+```
+
+Overall, the class label is not very clearly separated on most pair-wise plots. Still, there are some clear separation on some variable pairs, such as day and poutcome, pday and poutcome, all other vairables with duration, all other variables with campaign, age and poutcome. 
+
+The correlation matrix and the pair plots imply that classification on the data set may not be a easy one.
+
+
+# Baseline Model with decision tree and random forest
+
+The classification algorithms require the class label to be categorical.
+
+
+The order of level is by alphabet. "No" is the positive class by default. Change the order of the levels, so "yes" will be the positive class in the model.
+
+```{r}
+bank$y = factor(bank$y,levels(bank$y)[c(2,1)])
+```
+
+```{r}
+levels(bank$y)
+```
+
+__Split traning set and test set (original data)__
+
+```{r}
+## 75% of the sample size
+size1 <- floor(0.75 * nrow(bank))
+
+## set the seed to make your partition reproducible
+set.seed(123)
+train_ind1 <- sample(seq_len(nrow(bank)), size = size1)
+bank_train1 <- bank[train_ind1, ]
+bank_test1 <- bank[-train_ind1, ]
+```
+
+__Build baseline model with decision tree.__
+
+```{r}
+library(rpart)
+base_dt <- rpart(y ~ .,data = bank_train1, method = "class")
+base_dt
+```
+
+```{r}
+library(rpart.plot)
+rpart.plot(base_dt, main="Baseline Decision Tree")
+```
+
+The baselime decision tree selects duration, poutcome as predictors.
+
+Make prediction on test data 
+
+```{r}
+bank_test1$Prediction_DT <- predict(base_dt, bank_test1[, 1:16], type="class")
+
+#shows the true class and prediction class
+head(bank_test1[, 17:18])
+```
+
+Evaluate the base dicision tree with confusion matrix.
+
+```{r}
+library(caret)
+confusionMatrix(bank_test1$Prediction_DT, bank_test1$y, positive="yes")
+```
+
+The accuracy of this baseline decision tree classifer is good, but the specificity is not good enough. It has a low rate of capturing the real clients who subsrcibe a term deposit.
+
+In this project, specificity is more import than accuracy.
+
+
+__Build baseline model with random forest.__
+
+```{r}
+library(randomForest)
+base_rf <- randomForest(y ~ . , data=bank_train1, ntree=100, mtry=2, importance=TRUE)
+```
+
+Get one of the tree from the random forest model.
+
+```{r}
+gTree <- getTree(base_rf, 1, labelVar=TRUE)
+gTree
+```
+
+To visualize random forest, run:
+
+options(repos='http://cran.rstudio.org')
+have.packages <- installed.packages()
+cran.packages <- c('devtools','plotrix','randomForest','tree')
+to.install <- setdiff(cran.packages, have.packages[,1])
+if(length(to.install)>0) install.packages(to.install)
+
+library(devtools)
+if(!('reprtree' %in% installed.packages())){
+  install_github('araastat/reprtree')
+}
+for(p in c(cran.packages, 'reprtree')) eval(substitute(library(pkg), list(pkg=p)))
+
+(https://stats.stackexchange.com/questions/41443/how-to-actually-plot-a-sample-tree-from-randomforestgettree)
+
+```{r}
+library(reprtree)
+reprtree:::plot.getTree(base_rf, 1)
+```
+
+*** Visualization needs improvement.
+
+Make prediction on test data 
+
+```{r}
+bank_test1$Prediction_RF<- predict(base_rf, bank_test1[, 1:16], type="class")
+```
+
+```{r}
+head(bank_test1[, c(17, 19)])
+```
+
+Confusion Mat4rix for the base random forest model.
+
+```{r}
+library(caret)
+confusionMatrix(bank_test1$Prediction_RF, bank_test1$y)
+```
+
+```{r}
+base_rf$confusion
+base_rf$importance
+```
+
+
+__Find out the importance of the variables.__
+
+
+```{r}
+library(randomForest)
+varImpPlot(base_rf)
+```
+
+
+```{r}
+cm <- cor(bank_numeric[, 1:16])
+highly_cor <- findCorrelation(cm, cutoff = 0.5, verbose = TRUE)
+highly_cor
+```
+
+
+# PCA and Classification
+
+This section  runs the Principle Component Analysis and build classification model on the result.
+
+## PCA
+
+PCA requires numerical data. "bank_nc" has numerical predictors and categorical class label.
+
+```{r}
+bank$y <- as.factor(bank$y)
+class_label <- bank[,17]
+bank_nc <- cbind(bank_numeric[c(1:16)], class_label)
+```
+
+__Split traning set and test set__
+
+```{r}
+## 75% of the sample size
+pca_size <- floor(0.75 * nrow(bank_nc))
+
+## set the seed to make your partition reproducible
+set.seed(123)
+pca_train_ind <- sample(seq_len(nrow(bank_nc)), size = pca_size)
+
+pca_train <- bank_nc[pca_train_ind, ]
+pca_test <- bank_nc[-pca_train_ind, ]
+```
+
+```{r}
+prin_comp <- princomp(pca_train[c(1:16)])
+names(prin_comp)
+```
+
+```{r}
+prin_comp$center
+```
+
+```{r}
+prin_comp$loadings
+```
+
+```{r}
+library(ggfortify)
+autoplot(prin_comp, data = pca_train, colour = 'y',
+         loadings = TRUE, loadings.colour = 'blue', ncol=2,
+         loadings.label = TRUE, loadings.label.size = 4, loadings.label.colour = "black",
+         xlim=(c(-0.015, 0.02))) 
+
+```
+
+```{r}
+summary(prin_comp)
+```
+
+```{r}
+screeplot(prin_comp, type="lines", npc=16)
+```
+
+```{r}
+std_dev <- prin_comp$sdev
+pr_var <- std_dev^2
+prop_varex <- pr_var/sum(pr_var)
+plot(prop_varex, xlab = "Principal Component",
+             ylab = "Proportion of Variance Explained",
+             type = "b", main="Proportion Variance Explained by Each Component")
+```
+
+cumulative scree plot
+```{r}
+plot(cumsum(prop_varex), xlab = "Principal Component",
+              ylab = "Cumulative Proportion of Variance Explained",
+              type = "b")
+```
+
+```{r}
+pca_train1 <- data.frame(y = pca_train$y, prin_comp$scores)
+pca_train1 <- pca_train1[, 1:4]
+```
+
+```{r}
+class(pca_train1$y)
+```
+
+__Run decision tree on PCA data__
+
+
+```{r}
+library(rpart)
+pca_dt <- rpart(y ~ .,data = pca_train1, method = "class")
+pca_dt
+```
+
+```{r}
+library(rpart.plot)
+rpart.plot(pca_dt)
+```
+
+Transform test set into PCA
+
+```{r}
+pca_test1 <- predict(prin_comp, newdata = pca_test[c(1:16)])
+pca_test1 <- as.data.frame(pca_test1)
+pca_test1 <- pca_test1[, 1:3]
+```
+
+Make prediction on test data
+
+```{r}
+pca_test1$Prediction_DT <- predict(pca_dt, pca_test1, type="class")
+```
+
+```{r}
+pca_test1$y <- pca_test$y
+head(pca_test1[,4:5])
+```
+
+```{r}
+library(caret)
+confusionMatrix(pca_test1$Prediction, pca_test1$y)
+```
+
+__Run random forest on PCA data__
+
+```{r}
+library(randomForest)
+pca_rf <- randomForest(y ~ . , data=pca_train1, ntree=100, mtry=2, importance=TRUE)
+```
+
+Get one of the tree from the random forest model.
+
+```{r}
+gTree <- getTree(pca_rf, 1, labelVar=TRUE)
+gTree
+```
+
+
+Make prediction on test data
+
+```{r}
+pca_test1$Prediction_RF<- predict(pca_rf, pca_test1, type="class")
+```
+
+```{r}
+head(pca_test1[,c(4,6)])
+```
+
+```{r}
+confusionMatrix(pca_test1$Prediction_RF, pca_test1$y)
+```
+
+
+

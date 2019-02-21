@@ -1,0 +1,1563 @@
+---
+title: "Bank Marketing (Balanced Data)"
+output:
+  html_notebook: default
+  pdf_document: default
+---
+
+# Introduction
+## Project Objective
+This project aims to build a workable model to predict if a client will subscribe a term deposit. Key features of clients who did subscribe a term deposit will be discovered and used for marketing. For example, what are the potential client group in terms of age, job, previous relationship with the bank, etc. 
+
+## Data Processing
+The project works on the original data set with 45211 observations and 17 attributes. The drawback of using the original data set is: the data set is unbalanced in the class label, with way more than no than yes. This gives the classification model a good accuracy but a bad specificity (the rate capturing the yes class.) Thus, __in this project, the number of observation of "yes" in the "y" attribut will be replicated so that it equals to the number of observations of "no" in the "y" attribute.__
+
+## About the attributes
+Input variables:
+   # bank client data:
+   1 - age (numeric)
+   2 - job : type of job (categorical: "admin.","unknown","unemployed","management","housemaid","entrepreneur","student",
+                                       "blue-collar","self-employed","retired","technician","services") 
+   3 - marital : marital status (categorical: "married","divorced","single"; note: "divorced" means divorced or widowed)
+   4 - education (categorical: "unknown","secondary","primary","tertiary")
+   5 - default: has credit in default? (binary: "yes","no")
+   6 - balance: average yearly balance, in euros (numeric) 
+   7 - housing: has housing loan? (binary: "yes","no")
+   8 - loan: has personal loan? (binary: "yes","no")
+   # related with the last contact of the current campaign:
+   9 - contact: contact communication type (categorical: "unknown","telephone","cellular") 
+  10 - day: last contact day of the month (numeric)
+  11 - month: last contact month of year (categorical: "jan", "feb", "mar", ..., "nov", "dec")
+  12 - duration: last contact duration, in seconds (numeric)
+   # other attributes:
+  13 - campaign: number of contacts performed during this campaign and for this client (numeric, includes last contact)
+  14 - pdays: number of days that passed by after the client was last contacted from a previous campaign (numeric, -1 means client was not previously contacted)
+  15 - previous: number of contacts performed before this campaign and for this client (numeric)
+  16 - poutcome: outcome of the previous marketing campaign (categorical: "unknown","other","failure","success")
+
+  Output variable (desired target):
+  17 - y - has the client subscribed a term deposit? (binary: "yes","no")
+
+For source and attribute info of the data set, please refer to https://archive.ics.uci.edu/ml/datasets/bank+marketing
+
+
+# Understand the data
+
+Import the data set
+```{r}
+library(tidyverse)
+bank <- read_csv2("/home/junyan26/DATA/Bank_Marketing/bank/bank-full.csv", col_types = cols())
+```
+
+```{r}
+nrow(bank)
+ncol(bank)
+```
+
+```{r}
+print(head(bank))
+```
+
+```{r}
+sapply(bank, function(x) sum(is.na(x)))
+```
+
+There is no missing data in the data set.
+
+__Multiply the number of "yes" observations in the "y" attribute.___
+
+```{r}
+library(splitstackshape)
+bank <- as.data.frame((bank))
+num_no <- nrow(bank[bank$y == "no", ])
+num_yes <- nrow(bank[bank$y == "yes", ])
+rep_num <- round(num_no/num_yes)
+new_yes_rows <- expandRows(bank[bank$y == "yes", ], count = rep_num, count.is.col = FALSE)
+print(nrow(new_yes_rows))
+print(num_no)
+```
+
+```{r}
+n_yes_no <- data.frame(c(nrow(new_yes_rows), num_no))
+n_yes_no$class <- c("yes", "no")
+colnames(n_yes_no) <- c("count", "class")
+n_yes_no <- n_yes_no[, c(2, 1)]
+n_yes_no
+```
+
+
+```{r}
+library(ggplot2)
+ggplot(data=n_yes_no, aes(x=reorder(class, -count), y=count, fill=reorder(class, -count))) +
+  geom_bar(stat="identity", width=0.5)+ 
+  theme_classic() + ylab("Count") + xlab("classes in target variable \"y\"") +
+  ggtitle("Compare the Number of the Classes (After Over Sampling)") +
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold"), 
+        axis.text.x = element_text(hjust = 0.5, face="bold", size=14))+
+  guides(fill=FALSE, color=FALSE)
+```
+
+After the replication, the data is more balanced. The number of "yes" rows is 42312 and the number of "no" rows is 39922.
+
+```{r}
+bank <- rbind(bank[bank$y == "no", ], new_yes_rows)
+seed = 321
+bank <- bank[sample(nrow(bank)),]
+nrow(bank)
+ncol(bank)
+```
+
+The new data set has 82234 rows and 17 columns.
+
+
+```{r}
+summary(bank)
+```
+
+__Turn the "character" class variables into "factor".__
+
+```{r}
+sapply(bank, class)
+```
+
+```{r}
+c <- colnames(dplyr::select_if(bank, is.character))
+bank[c] <- lapply(bank[c], factor)
+sapply(bank, class)
+```
+
+
+# Improved Model
+
+## Feature Engineering
+
+1. Generate a correlation heatmap and pair-wise scatter plot to visualize the big picture of the data. \n
+2. Visualize each variable and see its associatioin with the output variable "y". \n
+3. Visualize those predictor variables that seem to be associated. \n
+4. Summerize the result \n
+
+__Turn categorical variables into numerical.__
+
+```{r}
+bank_numeric <- bank
+sapply(bank_numeric, class)
+```
+
+```{r}
+must_convert <- sapply(bank_numeric,is.factor)
+bank_numeric_temp <- sapply(bank_numeric[,must_convert],unclass)
+bank_numeric <- cbind(bank_numeric[,!must_convert],bank_numeric_temp)
+
+#Reorder the column names. Make them in sync with bank.
+cnames = colnames(bank)
+bank_numeric <- bank_numeric[, cnames]
+head(bank_numeric)
+```
+
+"bank_numeric" is a dataset generated from "bank" and with all numerical data.
+
+__Examine the correlation and significant level(pvalue) between variables.__
+
+```{r}
+library(Hmisc)
+options(scipen=999)
+cor_p <- rcorr(x = data.matrix(bank_numeric)[, 1:16], y = bank_numeric[, 17],  type = c("pearson", "spearman"))
+```
+
+Correlation Matrx:
+
+```{r}
+round(cor_p$r, 2)
+```
+
+
+```{r}
+round(cor_p$P, 2)
+```
+
+```{r}
+#install.packages("corrplot")
+library(corrplot)
+M <- cor_p$r
+p_mat <- cor_p$P
+corrplot(M, type = "upper",col = heat.colors(100),bg = "darkblue",
+         p.mat = p_mat, sig.level = 0.05)
+```
+
+__The correlation matrix is using Pearson Correlation and Spearman's Rank Correlation, the formaer of which designed for ratio and intervel data, while the latter of which for ordinal, ratio and interval. It is not very accuray because the not all the variables are of these data type. Still , it can be a reference of how the data seem to be correlated.
+
+In the majority of analyses, an alpha of 0.05 is used as the cutoff for significance. If the p-value is less than 0.05, we reject the null hypothesis that there's no correlation between the variables and conclude that a significant correlation does exist. If the p-value is larger than 0.05, we CANNOT reject the null hypothese and CANNOT conclude that a significant correlation exists. 
+
+The crosses in the plot indicate p-value higher than 0.05, which means we cannot conclude that the correlation between the varibales is significant. For the rest of them, we can conclude that the corralation is significant.
+
+Thus, all variables has significant correlation with the "y", although the correlation coefficients are not high. 
+
+The correlation between "pdays" and "poutcome" is negatively strong, which need to look closer later. 
+
+
+__Scatterplot Matrix__
+
+The points in a scatterplot matrix can be colored by the class label in classification problems. This can help to spot clear (or unclear) separation of classes and perhaps give an idea of how difficult the problem may.
+
+```{r, fig.height=30, fig.width=30}
+pairs(y~., data = as.matrix(bank), col = bank$y, lower.panel = NULL)
+```
+
+The pair plot shows how the variable pairs can seperate the "y" variable. Overall, the seperation is not very clear. Categorical and numerical variables are also included, which makes the plot unnecessarily big.
+
+Levels of the factor variables:
+
+```{r}
+sapply(dplyr::select_if(bank, is.factor), levels)
+```
+
+Summary of numeric variable:
+
+```{r}
+sapply(dplyr::select_if(bank, is.numeric), summary)
+```
+
+From summary, we can see "age" seems normally distributed. "balance" is very widely spread. "day" itself doesn't make a lot of sense and may be combined with "month". "duration", "campaign", "pdays" and "previous" seem to be skewed.
+
+__Visualization of the Data Set__
+
+```{r}
+ggplot(bank, aes(x=age, fill=y, color=y))+
+  geom_histogram(position="identity", alpha=0.5, binwidth=2)+
+  stat_function(fun = function(bank, mean, sd, n){
+    n * dnorm(x = bank, mean = mean, sd = sd) }, 
+    args = with(bank, c(mean = mean(age), sd = sd(age), n 
+                        = length(age))), col="blue") +
+  scale_color_manual(values=c("lightblue", "coral"))+
+  scale_fill_manual(values=c("lightblue", "coral")) +
+  theme_classic() +
+  ggtitle("Age Distribution Colored by Y") +
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold"))
+```
+
+
+Red and blue area seperated a little, but overal, it is overlap. Age is nomally distributed.
+
+
+```{r}
+spineplot(x = bank$age, y = bank$y, xlab = "age", ylab = "y", breaks=20,
+          main = "Age vs Y", col = c("lightblue",  "coral"))
+```
+
+More than 80% of people aged older than 60 and younger than 18 subsribe a term deposit. But this two groups are only small number of people.
+
+
+```{r}
+ggplot(bank, aes(x=balance, fill=y, color=y))+
+  geom_histogram(position="identity", alpha=0.5, binwidth=2000)+
+  scale_color_manual(values=c("lightblue", "coral"))+
+  scale_fill_manual(values=c("lightblue", "coral")) +
+  theme_classic() +
+  ggtitle("Balance Distribution Colored by Y") +
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold"))
+```
+
+"balance" is not normally distributed. The two color has a little seperation.
+
+```{r}
+spineplot(x = bank$balance, y = bank$y, xlab = "balance", ylab = "y", breaks=100,
+          main = "balance vs y", col = c("lightblue",  "coral"))
+```
+
+```{r}
+spineplot(x = bank[bank$balance > 25000, "balance"], y = bank[bank$balance > 25000, "y"], xlab = "balance", ylab = "y", breaks=100,
+          main = "balance (>25000) vs y", col = c("lightblue",  "coral"))
+```
+
+Balance larger than 25000 has more "yes".
+
+```{r}
+bank[bank$balance > 65000, c("balance", "y")]
+```
+
+```{r}
+spineplot(x = bank[bank$balance < -600, "balance"], y = bank[bank$balance < -600, "y"], xlab = "balance", ylab = "y", breaks=100,
+          main = "balance (<0) vs y", col = c("lightblue",  "coral"))
+```
+
+It seems like for balance more than 25000, the more balance, the higher proportion of people subsribe a term deposit. But this is very small number of group. For negative balance, there are less people subscribe.
+
+Plot age, balance and y
+
+```{r}
+#library(ggplot2)
+library(ggpubr)
+# Grouped Scatter plot with marginal density plots
+ggscatterhist(
+  bank[, c("age", "balance", "y")], x = "age", y = "balance",
+  color = "y", size = 3, alpha = 0.6,
+  palette = c("lightblue", "coral"), legend = "right")
+
+```
+
+The two colors are almost well moix. "age" and "balance" together don't seperate "yes" and "no" in "y" well.
+
+
+```{r}
+ggplot(bank, aes(x=duration, fill=y, color=y))+
+  geom_histogram(position="identity", alpha=0.5, binwidth=100)+
+  scale_color_manual(values=c("lightblue", "coral"))+
+  scale_fill_manual(values=c("lightblue", "coral")) +
+  theme_classic() +
+  ggtitle("Duration Distribution Colored by Y") +
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold"))+
+  xlab("duration: last contact duration, in seconds")
+```
+
+Two colors have a obvious seperation. "duration" seperates the two categories of "y" pretty well.
+
+```{r}
+spineplot(x = bank$duration, y = bank$y, xlab = "duration: last contact duration, in seconds", ylab = "y", breaks=100,
+          main = "Duration vs Y", col = c("lightblue",  "coral"))
+```
+
+"duration" and "y"are pretty strongly associated. The longer duration is, the bigger prportion of people subscibe a term deposit.
+
+
+```{r}
+summary(bank$duration)
+```
+
+```{r}
+ggplot(bank, aes(x=campaign, fill=y, color=y))+
+  geom_histogram(position="identity", alpha=0.5, binwidth=1)+
+  scale_color_manual(values=c("lightblue", "coral"))+
+  scale_fill_manual(values=c("lightblue", "coral")) +
+  theme_classic() +
+  ggtitle("Campaign Distribution Colored by Y") +
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold")) +
+  xlab("campaign: number of contacts performed during this campaign")
+```
+
+The two colors overlap well in the middle and have some seperation at the two ends.
+
+```{r}
+summary(bank$campaign)
+```
+
+Unique number in "campaign":
+
+```{r}
+sort(unique(bank$campaign))
+```
+
+
+```{r}
+aggregate(data.frame(count = bank$campaign), list(value = bank$campaign), length)
+```
+
+Most of the campaign is on 1 and 2.
+
+```{r}
+spineplot(x = bank$campaign, y = bank$y, xlab = "campaign: number of contacts performed during this campaign", ylab = "y", breaks=50,
+          main = "Campaign vs Y", col = c("lightblue",  "coral"))
+```
+
+Seem to have some trend.
+
+```{r}
+df_cam <- bank[bank$campaign > 3, ]
+spineplot(x = df_cam$campaign, y = df_cam$y, xlab = "campaign: number of contacts performed during this campaign", ylab = "y", breaks=50, main = "Campaign (>3) vs Y", col = c("lightblue",  "coral"))
+```
+
+There is a trend that the more number of campaign, the less percentage of clients substribe a term deposit, Expecially for campaign more than 3.
+
+
+```{r}
+library(ggpubr)
+# Grouped Scatter plot with marginal density plots
+ggscatterhist(
+  bank[, c("campaign", "duration", "y")], x = "campaign", y = "duration",
+  color = "y", size = 3, alpha = 0.6,
+  palette = c("lightblue", "coral"), legend = "right")+
+  ggtitle("Campaign and Duration Colored by Y") +
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold"))
+```
+
+The two colors seperated. May be because "duration" is a predictor. But "campaign" should be kept as well.
+
+```{r}
+summary(bank$previous)
+```
+
+Unique number in "previous":
+
+```{r}
+sort(unique(bank$previous))
+```
+
+
+```{r}
+aggregate(data.frame(count = bank$previous), list(value = bank$previous), length)
+```
+
+```{r}
+library(ggplot2)
+ggplot(bank, aes(x=previous, fill=y, color=y))+
+  geom_histogram(position="identity", alpha=0.5, binwidth=10)+
+  scale_color_manual(values=c("lightblue", "coral"))+
+  scale_fill_manual(values=c("lightblue", "coral")) +
+  theme_classic() +
+  ggtitle("Previous Distribution Colored by Y") +
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold")) +
+  xlab("previous: number of contacts performed before this campaign")
+```
+
+Previous is not unbalanced. Remove previous > 10 and plot again
+
+```{r}
+library(ggplot2)
+df_prev <- bank[bank$previous < 10,]
+ggplot(df_prev, aes(x=previous, fill=y, color=y))+
+  geom_histogram(position="identity", alpha=0.5, binwidth=1)+
+  scale_color_manual(values=c("lightblue", "coral"))+
+  scale_fill_manual(values=c("lightblue", "coral")) +
+  theme_classic() +
+  ggtitle("Previous ( < 10) Distribution Colored by Y") +
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold"))+
+  xlab("previous: number of contacts performed before this campaign")
+```
+
+Two colors has some sort of seperation.
+
+```{r}
+spineplot(x = bank$previous, y = bank$y, xlab = "previous: number of contacts performed before this campaign", ylab = "y", breaks=200, main = "Previous vs Y", col = c("lightblue",  "coral"))
+```
+
+Less than 50% of people that has no previous contact subscribe a term deposit. And most people don't have previous contact. And more previous contact seems to lead to more percentage of people who subscribe a term deposit. May be previous should be convert into boolean, 0 = false, >0 = true
+
+```{r}
+tem <- bank
+tem$previous1 <- tem$previous > 0
+```
+
+```{r}
+tem$previous1 <- as.factor(tem$previous1)
+```
+
+
+```{r}
+spineplot(x = tem$previous1, y = tem$y, xlab = "Previous (bool)", ylab = "y", breaks=lims,
+          main = "Previous (bool) vs Y", col = c("lightblue", "coral"), xaxlabels = levels(tem$previous1))
+```
+
+Now the variable makes more sense.
+
+
+```{r}
+library(ggplot2)
+ggplot(bank, aes(x=pdays, fill=y, color=y))+
+  geom_histogram(position="identity", alpha=0.5, binwidth=100)+
+  scale_color_manual(values=c("lightblue", "coral"))+
+  scale_fill_manual(values=c("lightblue", "coral")) +
+  theme_classic() +
+  ggtitle("Pdays Distribution Colored by Y") +
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold"))+
+  xlab("pdays: number of days that passed by after the client was \nlast contacted from a previous campaign (-1 means client was not previously contacted)")
+```
+
+"Pdays" are most -1 (-1 means client was not previously contacted). So this variable should have a lot of duplicate as the "previous" variable.
+
+```{r}
+library(ggplot2)
+df_pdays <- bank[bank$pdays == -1,]
+ggplot(df_pdays, aes(x=pdays, fill=y, color=y))+
+  geom_histogram(position="identity", alpha=0.3, binwidth=0.5)+
+  scale_color_manual(values=c("lightblue", "coral"))+
+  scale_fill_manual(values=c("lightblue", "coral")) +
+  theme_classic() +
+  ggtitle("Pdays (=-1) Distribution Colored by Y") +
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold"))+
+  xlab("pdays: number of days that passed by after the client was \nlast contacted from a previous campaign (-1 means client was not previously contacted)")
+```
+
+```{r}
+spineplot(x = bank$pdays, y = bank$y, xlab = "pdays", ylab = "y", breaks=1000, main = "Pdays vs Y", col = c("lightblue",  "coral"))
+```
+
+```{r}
+df_pdays <- bank[bank$pdays >0, ]
+spineplot(x = df_pdays$pdays, y = df_pdays$y, xlab = "pdays", ylab = "y", breaks=100, main = "Pdays (>0) vs Y", col = c("lightblue",  "coral"))
+```
+
+```{r}
+bank[bank$pdays>0,]
+```
+
+
+Most clients didn't get contact previous, and less than half of them subscribe a term deposit. For those who got contacted, pdays 80-100 and 180-190 have the highest subscribe rate (more than 80%).
+
+Convert "pdays" into bool
+
+```{r}
+tem$pdays1 <- tem$pdays > 0
+```
+
+```{r}
+tem$pdays1 <- as.factor(tem$pdays1)
+```
+
+```{r}
+spineplot(x = tem$pdays1, y = tem$y, xlab = "Pdays (bool)", ylab = "y", breaks=lims,
+          main = "Pdays (bool) vs Y", col = c("lightblue", "coral"), xaxlabels = levels(tem$pdays1))
+```
+
+Compare previous and pdays
+
+```{r}
+tem$previous1 <- as.factor(tem$previous1)
+```
+
+
+```{r}
+spineplot(x = tem$pdays1, y = tem$previous1, xlab = "Pdays (bool)", ylab = "y", breaks=lims,
+          main = "Pdays (bool) vs Previous (bool) ", col = c("lightblue", "coral"), xaxlabels = levels(tem$pdays1))
+```
+
+pdays (bool) and previous (bool) are total overlap. Since pdays is strongly associated with previous and poutcome (shown later). It should be droped when performing classification.
+
+Combine cpmpaign and previous, named "contact_times"
+
+```{r}
+tem$contact_times <- tem$campaign + tem$previous
+```
+
+```{r}
+library(ggplot2)
+ggplot(tem, aes(x=contact_times, fill=y, color=y))+
+  geom_histogram(position="identity", alpha=0.5, binwidth=5)+
+  scale_color_manual(values=c("lightblue", "coral"))+
+  scale_fill_manual(values=c("lightblue", "coral")) +
+  theme_classic() +
+  ggtitle("Contact_Times (Campaign + Previous) Distribution Colored by Y") +
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold"))+
+  xlab("contact_times: the total number of being contacted \nbefore this campaign and during this compaign")
+```
+
+```{r}
+spineplot(x = tem$contact_times, y = tem$y, xlab = "contact_times: the total number of being contacted \nbefore this campaign and during this compaign", ylab = "y", breaks=200,
+          main = "Contact_Times (Campaign + Previous) vs Y", col = c("lightblue",  "coral"))
+```
+
+The contact_times variable shows less power of splitting "yes" and "no" in the y variable. So it should not be used.
+
+Plot month:
+
+```{r}
+ggplot(bank, aes(x=month, fill=y, color=y))+
+  geom_histogram(position="identity", alpha=0.5, stat="count")+
+  scale_color_manual(values=c("lightblue", "coral"))+
+  scale_fill_manual(values=c("lightblue", "coral")) +
+  theme_classic() +
+  ggtitle("Month Distribution Colored by Y") +
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold"))
+```
+
+Two colors have some sort of seperation.
+
+Plot day of month:
+
+```{r}
+ggplot(bank, aes(x=day, fill=y, color=y))+
+  geom_histogram(position="identity", alpha=0.5, stat="count")+
+  scale_color_manual(values=c("lightblue", "coral"))+
+  scale_fill_manual(values=c("lightblue", "coral")) +
+  theme_classic() +
+  ggtitle("Day Distribution Colored by Y") +
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold"))
+```
+
+Two colors have some seperation.
+
+__Combine day and month__
+
+```{r}
+summary(bank[, c("day", "month")])
+```
+
+```{r}
+library(magrittr)
+library(lubridate)
+mo2Num <- function(x) match(tolower(x), tolower(month.abb))
+month <- as.double(mo2Num(bank$month))
+day <- as.double(bank$day)
+m_d <- paste("2018", month, day, sep="-") %>% ymd() %>% as.Date()
+m_d <- setNames(data.frame(m_d), "date")
+head(m_d)
+```
+
+```{r}
+tem <- cbind(tem, m_d)
+```
+
+```{r}
+#remove the year
+tem$date <- format(tem$date, format="%m-%d")
+tem <- tem[, -19]
+head(tem)
+```
+
+Plot date (day and month)
+
+```{r}
+length(unique(tem$date))
+```
+
+Group "y" by each unique date
+
+```{r}
+library(dplyr)
+date_y <- tem %>% 
+  group_by(date, y) %>% 
+  summarise(n = n())
+head(date_y)
+```
+
+```{r}
+date_y <- data.frame(date_y)
+```
+
+```{r}
+date_y_yes <- date_y[date_y$y=="yes", c("date", "n")]
+rownames(date_y_yes) <- date_y_yes$date
+head(date_y_yes)
+```
+
+```{r}
+date_y_no <- date_y[date_y$y=="no", c("date", "n")]
+rownames(date_y_no) <- date_y_no$date
+head(date_y_no)
+```
+
+```{r}
+
+ggplot(data=date_y, aes(x=date, y= n, group = y, fill=y, color=y)) + geom_line()+
+  scale_color_manual(values=c("lightblue", "coral"))+
+  scale_fill_manual(values=c("lightblue", "coral")) +
+  theme_classic() +
+  ggtitle("Date Distribution Colored by Y")+
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold"), axis.text.x= element_blank()) +
+  ylab("count")
+```
+
+The two colors seperated a little, but overall it seems to be the same as month. So it shoube be better to keep month and day seperated.
+
+
+```{r}
+ggplot(bank, aes(x=poutcome, fill=y, color=y))+
+  geom_histogram(position="identity", alpha=0.5, stat="count")+
+  scale_color_manual(values=c("lightblue", "coral"))+
+  scale_fill_manual(values=c("lightblue", "coral")) +
+  theme_classic() +
+  ggtitle("Poutcome Distribution Colored by Y") +
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold"))
+```
+
+Success has much more "yes" than "no".
+
+```{r}
+levels(bank$poutcome)
+```
+
+
+From the pair plot, "pdays" and "poutcome" together can identify most one category of "y" and can barely identify the other. "y" is boolean, which red correla
+
+```{r}
+par(las = 2, cex.axis = 0.75, mar = c(7, 4.1, 4.1, 2.1))
+spineplot(x = bank$poutcome, y = bank$y, xlab = "poutcome", ylab = "y", breaks=lims,
+          main = "poutcome vs y", col = c("lightblue",  "coral"))
+```
+
+If a client subsribed a term deposit, he/ she is very likely to subscribe in this campaign. Poutcome seems to be a strong predictor.
+
+Plot pdays and poutcome
+
+
+```{r}
+par(las = 1, cex.axis = 0.75, mar = c(7, 4.1, 4.1, 2.1))
+spineplot(x = bank$pday, y = bank$poutcome, xlab = "pdays", ylab = "poutcome", breaks=1000,
+          main = "pdays vs poutcome", col = c("lightblue", "grey","coral", "white"))
+```
+
+
+```{r}
+dfpp <- bank[bank$pdays >-1, ]
+par(las = 1, cex.axis = 0.75, mar = c(7, 4.1, 4.1, 2.1))
+spineplot(x = dfpp$pday, y = dfpp$poutcome, xlab = "pdays", ylab = "poutcome", breaks=2000,
+          main = "pdays vs poutcome", col = c("lightblue", "grey","coral", "white"))
+```
+
+
+All poutcome is unknown if pdays = -1, meaning the client was not contacted from a previous compaign.
+
+Most of the clients with pdays of 88-93 and 176 - 186 that were previously contacted subscribed a term deposit.
+
+Pdays seems to be strongly correlated to poutcome. So it may be removed.
+
+
+```{r}
+par(las = 2, cex.axis = 0.75, mar = c(7, 4.1, 4.1, 2.1))
+spineplot(x = bank$job, y = bank$y, xlab = "job", ylab = "y",
+          main = "Job vs Y", col = c("lightblue", "coral"), xaxlabels = levels(bank$job))
+
+
+```
+
+Overall, job has some difference in "yes" and "no" among its categories. It may be a good predictor.
+
+
+```{r}
+spineplot(x = bank$marital, y = bank$y, xlab = "marital", ylab = "y",
+          main = "Marital vs Y", col = c("lightblue", "coral"), xaxlabels = levels(bank$marital))
+```
+
+Both marital have equal number of "yes" and "no" among its categories. It seems to be a very weak predictor.
+
+
+```{r}
+spineplot(x = bank$job, y = bank$marital, xlab = "marital", ylab = "job",
+          main = "Marital vs Job", col = c("lightblue", "coral", "grey"), xaxlabels = levels(bank$job))
+```
+
+Most students are single and most retired peopele are married. But the two variables are pretty mixed overall. So they seem not strongly associated.
+
+
+```{r}
+spineplot(x = bank$education, y = bank$y, xlab = "education", ylab = "y",
+          main = "Education vs Y", col = c("lightblue", "coral"), xaxlabels = levels(bank$education))
+```
+
+The "yes" and "no" are pretty evenly seperated. "education" may not be a good predictor.
+
+
+```{r}
+spineplot(x = bank$default, y = bank$y, xlab = "default", ylab = "y",
+          main = "Default vs Y", col = c("lightblue", "coral"), xaxlabels = levels(bank$default))
+```
+
+"default" almost perfectly split yes and no. Obviously, it has almost not association with "y".
+
+
+```{r}
+par(las = 2, cex.axis = 0.75, mar = c(7, 4.1, 4.1, 2.1))
+spineplot(x = bank$job, y = bank$default, xlab = "job", ylab = "default",
+          main = "Default vs Job", col = c("lightblue", "coral"), xaxlabels = levels(bank$job))
+```
+
+Almost all retired and student clients have no defult. And all other jobs have default. Default has very small number "yes" and it doesn't identify "y" well. "default" can be deleted.
+
+
+```{r}
+spineplot(x = bank$housing, y = bank$y, xlab = "housing", ylab = "y",
+          main = "Housing vs Y", col = c("lightblue", "coral"), xaxlabels = levels(bank$housing))
+```
+
+"housing" has some difference in the proportion of "yes" and "no". But not very obvious.
+
+
+```{r}
+par(las = 2, cex.axis = 0.75, mar = c(7, 4.1, 4.1, 2.1))
+spineplot(x = bank$job, y = bank$housing, xlab = "job", ylab = "housing",
+          main = "Job vs Housing", col = c("lightblue", "coral"), xaxlabels = levels(bank$job))
+```
+
+"housing" is widely spread to all jobs. so "housing" seems to have weak association with "job".
+
+
+```{r}
+ggplot(bank, aes(x=age, fill=housing, color=housing))+
+  geom_histogram(position="identity", alpha=0.5)+
+  stat_function(fun = function(bank, mean, sd, n){
+    n * dnorm(x = bank, mean = mean, sd = sd) }, 
+    args = with(bank, c(mean = mean(age), sd = sd(age), n 
+                        = length(age))), col="blue") +
+  scale_color_manual(values=c("lightblue", "coral"))+
+  scale_fill_manual(values=c("lightblue", "coral")) +
+  theme_classic() +
+  ggtitle("Balance Distribution Colored by Housing") +
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold"))
+```
+
+"housing" seems to associated with "age". Correlation of these two should be tested.
+
+```{r}
+spineplot(x = bank$balance, y = bank$housing, xlab = "balance", ylab = "housing", breaks=100,
+          main = "Balance vs Housing", col = c("lightblue",  "coral"))
+```
+
+
+"housing" seems to widely in balance.
+
+```{r}
+spineplot(x = bank$loan, y = bank$y, xlab = "loan", ylab = "y",
+          main = "Loan vs Y", col = c("lightblue", "coral"), xaxlabels = levels(bank$loan))
+```
+
+No dramactic split.
+
+```{r}
+spineplot(x = bank$housing, y = bank$loan, xlab = "housing", ylab = "loan",
+          main = "Housing vs Loan", col = c("lightblue", "coral"), xaxlabels = levels(bank$housing))
+```
+
+No strong association.
+
+
+```{r}
+par(las = 2, cex.axis = 0.75, mar = c(7, 4.1, 4.1, 2.1))
+spineplot(x = bank$contact, y = bank$y, xlab = "contact", ylab = "y",
+          main = "Contact vs Y", col = c("lightblue", "coral"), xaxlabels = levels(bank$contact))
+```
+
+May have some association. 
+
+
+###Summry of the plots
+
+In the above visualization, some variable seem to have more association than the others. Here is the summery of the predictor variables: \n
+
+**Good**: duration, job, age, poucome
+**medium**: month, day, previous (bool)
+**small**: marital, education, balance, housing, loan, contact, campaign
+**should not use**: default, pdays
+
+
+# Tests of Independence
+
+Run the tests to further identify the strength of the predictor variables.
+
+### Chi-Squared Test
+
+Chi-Squared Test is for two categorical variables. Variables include: job, poutcome, month, previous(bool), education, housing, loan, contact, default
+
+Between predictor variables: job and default
+
+1. Generate frequecy table \n
+2. Chi-squared Test
+3. Cramer's V (to get the association strength) \n
+4. Compare the result and select the features together with the visualization summary
+
+Sample 1% of data for chi-squared test of independence.
+
+```{r}
+set.seed(789)
+inde_test <- bank[sample(seq_len(nrow(bank)), size = floor(0.01 * nrow(bank))), ]
+nrow(inde_test)
+```
+
+Contingency tables of y ~ job, poutcome, month, day (need to convert to factor), previous (bool), education, housing, loan, contact and default
+
+__job__
+
+Chi-squared test: \n
+H0:  The two variables are independent. \n
+H1:  The two variables are related.
+
+
+```{r}
+y_job <- table(inde_test$job, inde_test$y)
+y_job
+```
+
+Pooling: When a variable has more than two categories, and some of them have small numbers, it often makes sense to pool some of the categories together.
+
+Combine "unknown", "housemaid" and student into a new category "others"
+
+```{r}
+jobs <- levels(inde_test$job)
+jobs
+```
+
+```{r}
+library(rockchalk)
+inde_test$new_jobs <- combineLevels(inde_test$job, levs = c("student", "housemaid", "unknown", 
+                                                            "unemployed", "entrepreneur"), 
+                                    newLabel = c("Others"))
+```
+
+
+```{r}
+y_new_job <- table(inde_test$new_job, inde_test$y)
+y_new_job
+```
+
+```{r}
+chisq.test(y_new_job)
+```
+
+Critical Value (use 95% confidence level). (If Chi Square value >= Critical Value, reject the null hypothesis.
+If Chi Square value < Critical Value, fail to reject the null hypothesis.)
+
+```{r}
+df = (8-1) * (2-1)
+qchisq(0.95, df)
+```
+
+```{r}
+library(questionr)
+job_v <- cramer.v(y_new_job)
+job_v
+```
+
+
+p-value is very small and chi-squared value is larger than critical value. So reject null hypothesis. There is association between job and y. The association is medium strong based on the cramer's v value. 
+
+__poutcome__
+
+```{r}
+library(questionr)
+print("Contingency Table of Poutcome and Y:")
+po_y <- table(inde_test$poutcome, inde_test$y)
+po_y 
+
+print("Chi-Squared Test of Poutcome and Y Table:")
+chisq.test(po_y) 
+df <- (length(levels(inde_test$poutcome)) -1 ) * (length(levels(inde_test$y)) -1 )
+print("Critical Value of Poutcome and Y Table:")
+qchisq(0.95, df)
+print("Cramer.V of Poutcome and Y:")
+poutcome_v <- cramer.v(po_y)
+poutcome_v
+```
+
+"poutcome" is associated with "y". The association is pretty strong as cramer's v larger than 0.3.
+
+__month__
+
+```{r}
+library(questionr)
+print("Contingency Table of Month and Y:")
+month_y <- table(inde_test$month, inde_test$y)
+month_y 
+
+print("Chi-Squared Test of Month and Y Table:")
+chisq.test(month_y) 
+df <- (length(levels(inde_test$month)) -1 ) * (length(levels(inde_test$y)) -1 )
+print("Critical Value of Month and Y Table:")
+qchisq(0.95, df)
+print("Cramer.V of Month and Y:")
+month_v <- cramer.v(month_y)
+month_v
+```
+
+"month" is associated with "y", and the association is pretty strong.
+
+__previous (bool)__
+
+change previuos into bool
+
+```{r}
+inde_test$previous_bool <- inde_test$previous > 0
+inde_test$previous_bool <- as.factor(inde_test$previous_bool)
+```
+
+
+```{r}
+library(questionr)
+print("Contingency Table of Previous_bool and Y:")
+previous_bool_y <- table(inde_test$previous_bool, inde_test$y)
+previous_bool_y 
+
+print("Chi-Squared Test of Previous_bool and Y Table:")
+chisq.test(previous_bool_y) 
+df <- (length(levels(inde_test$previous_bool)) -1 ) * (length(levels(inde_test$y)) -1 )
+print("Critical Value of Previous_bool and Y Table:")
+qchisq(0.95, df)
+print("Cramer.V of Previous_bool and Y:")
+previous_bool_v <- cramer.v(previous_bool_y)
+previous_bool_v
+```
+
+"Previous_bool" and "y" is associated and the association strength is medium.
+
+__education__
+
+```{r}
+library(questionr)
+print("Contingency Table of Education and Y:")
+education_y <- table(inde_test$education, inde_test$y)
+education_y 
+
+print("Chi-Squared Test of Education and Y Table:")
+chisq.test(education_y) 
+df <- (length(levels(inde_test$education)) -1 ) * (length(levels(inde_test$y)) -1 )
+print("Critical Value of Education and Y Table:")
+qchisq(0.95, df)
+print("Cramer.V of Education and Y:")
+education_v <- cramer.v(education_y)
+education_v
+```
+
+"education" and "y" is associated but the association strength is weak.
+
+__housing__
+
+```{r}
+library(questionr)
+print("Contingency Table of Housing and Y:")
+housing_y <- table(inde_test$housing, inde_test$y)
+housing_y 
+
+print("Chi-Squared Test of Housing and Y Table:")
+chisq.test(housing_y) 
+df <- (length(levels(inde_test$housing)) -1 ) * (length(levels(inde_test$y)) -1 )
+print("Critical Value of Housing and Y Table:")
+qchisq(0.95, df)
+print("Cramer.V of Housing and Y:")
+housing_v <- cramer.v(housing_y)
+housing_v
+```
+
+"housing" and "y" is associated and the association strength is medium.
+
+
+```{r}
+library(questionr)
+print("Contingency Table of Loan and Y:")
+loan_y <- table(inde_test$loan, inde_test$y)
+loan_y 
+
+print("Chi-Squared Test of Loan and Y Table:")
+chisq.test(loan_y) 
+df <- (length(levels(inde_test$loan)) -1 ) * (length(levels(inde_test$y)) -1 )
+print("Critical Value of Loan and Y Table:")
+qchisq(0.95, df)
+print("Cramer.V of Loan and Y:")
+loan_v <- cramer.v(loan_y)
+loan_v
+```
+
+"loan" and "y" is weakly associated.
+
+__contact__
+
+```{r}
+library(questionr)
+print("Contingency Table of Contact and Y:")
+contact_y <- table(inde_test$contact, inde_test$y)
+contact_y 
+
+print("Chi-Squared Test of Contact and Y Table:")
+chisq.test(contact_y) 
+df <- (length(levels(inde_test$contact)) -1 ) * (length(levels(inde_test$y)) -1 )
+print("Critical Value of Contact and Y Table:")
+qchisq(0.95, df)
+print("Cramer.V of Contact and Y:")
+contact_v <- cramer.v(contact_y)
+contact_v
+```
+
+"contact" and "y" is strongly associated.
+
+__default__
+
+```{r}
+library(questionr)
+print("Contingency Table of Default and Y:")
+default_y <- table(inde_test$default, inde_test$y)
+default_y 
+
+print("Chi-Squared Test of Contact and Y Table:")
+chisq.test(default_y) 
+df <- (length(levels(inde_test$default)) -1 ) * (length(levels(inde_test$y)) -1 )
+print("Critical Value of Default and Y Table:")
+qchisq(0.95, df)
+print("Cramer.V of Default and Y:")
+default_v <- cramer.v(default_y)
+default_v
+```
+
+p-value is larger than 0.05, chi-squared value is smaller than critical value, so fail to reject the null hypothesis. We cannot conclude that "default" and "y" is associated.
+
+
+__marital__
+
+
+```{r}
+library(questionr)
+print("Contingency Table of Marital and Y:")
+marital_y <- table(inde_test$marital, inde_test$y)
+marital_y 
+
+print("Chi-Squared Test of Marital and Y Table:")
+chisq.test(marital_y) 
+df <- (length(levels(inde_test$marital)) -1 ) * (length(levels(inde_test$y)) -1 )
+print("Critical Value of Marital and Y Table:")
+qchisq(0.95, df)
+print("Cramer.V of Marital and Y:")
+marital_v <- cramer.v(marital_y)
+marital_v
+```
+
+No association between "marital" and "y".
+
+__job and default__
+
+```{r}
+library(questionr)
+print("Contingency Table of Default and Job:")
+default_job_new <- table(inde_test$default, inde_test$new_jobs)
+default_job_new 
+
+print("Chi-Squared Test of Contact and Job Table:")
+chisq.test(default_job_new) 
+df <- (length(levels(inde_test$default)) -1 ) * (length(levels(inde_test$new_jobs)) -1 )
+print("Critical Value of Default and Job Table:")
+qchisq(0.95, df)
+print("Cramer.V of Default and Job:")
+default_job_new_v <- cramer.v(default_job_new)
+default_job_new_v
+```
+
+No association between job and default.
+
+
+__Visualize the results__
+
+```{r}
+var <- c("job", "poutcome", "month", "previous_bool", "education", "housing", "loan",
+         "contact", "marital", "default")
+v <- c(job_v, poutcome_v, month_v, previous_bool_v, education_v, housing_v, loan_v, contact_v, marital_v,
+       default_v)
+
+chi_test <- data.frame(var, v)
+names(chi_test) <- c("Variables", "Cramer.V")
+chi_test
+```
+
+```{r}
+library(ggplot2)
+ggplot(data=chi_test, aes(x=reorder(Variables, -Cramer.V), y=Cramer.V, fill=Variables)) +
+  geom_bar(stat="identity")+ 
+  theme_classic() + ylab("Cramer's V") + xlab("Categorical Variables") +
+  ggtitle("Cramer's V of Categorical Variables") +
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold"), 
+        axis.text.x = element_text(angle = 45, hjust = 1, face="bold", size=14))
+  
+
+```
+
+
+### Logistic Regression 
+
+Logistic Regression is for a continous varible and a categorical variable. Variables include: duration, age, balance, campaign, pdays, day
+
+Between predictor variables: age and housing
+
+1. Build a logistic regression model \n
+2. Check the correlation estimate \n
+3. Compare the result and select the features together with the visualization summary
+
+__duration__
+
+```{r}
+lr_duration <- glm(y ~ duration, data = inde_test, family = "binomial")
+summary(lr_duration)$coefficient
+```
+
+
+__age__
+
+```{r}
+lr_age <- glm(y ~ duration + age, data = inde_test, family = "binomial")
+summary(lr_age)$coefficient
+```
+
+```{r}
+lr <- glm(y ~ duration + age + balance + campaign + pdays + day, data = inde_test, family = "binomial")
+summary(lr)
+```
+
+```{r}
+library(caret)
+imp <- as.data.frame(varImp(lr))
+imp <- data.frame(overall = imp$Overall,
+           names   = rownames(imp))
+lr_test <- imp[order(imp$overall,decreasing = T),]
+names(lr_test) <- c("Importance", "Variables")
+lr_test
+```
+
+
+__One-Way ANOVA Test for Age and Y__
+
+"age" is normal distribution, so it can apply anova test.
+
+```{r}
+oneway.test(age~ y, bank, var.equal=T)
+```
+
+Critical value
+
+```{r}
+qf(0.95, 1, 82232)
+```
+
+F value >= Critical Value, and p-value < 0.05, so we reject the null hypothesis. There is association between "age" and "y".
+
+
+__Visualize the test results__
+
+```{r}
+library(ggplot2)
+ggplot(data=lr_test, aes(x=reorder(Variables, -Importance), y=Importance, fill=Variables)) +
+  geom_bar(stat="identity")+
+  theme_classic() + ylab("Importance") + xlab("Continuous Variables") +
+  ggtitle("Importance of Continous Variables") +
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold"), axis.text.x = element_text(
+    face="bold", angle = 45, hjust = 1, size=14))
+
+```
+
+__Feature Selection__
+
+feature_group1: month, poutcome, contact, duration
+feature_group2: month, poutcome, contact, duration, job, housing, previous_bool
+
+
+#Classification
+
+```{r}
+bank_base <- bank
+```
+
+The order of level is by alphabet. "No" is the positive class by default. Change the order of the levels, so "yes" will be the positive class in the model.
+
+```{r}
+bank_base$y = factor(bank_base$y,levels(bank_base$y)[c(2,1)])
+```
+
+```{r}
+levels(bank_base$y)
+```
+
+Now the "yes" will be the positive class in the models
+
+###Baseline Models
+
+Two baseline classifiction models are created using decision tree and random forest with all the 16 variables. 
+
+```{r}
+## 75% of the sample size
+size_base <- floor(0.75 * nrow(bank_base))
+
+## set the seed to make your partition reproducible
+set.seed(123)
+# sample(seq_len(nrow(bank)), size = size1) -> the index of training set
+train <- bank_base[sample(seq_len(nrow(bank_base)), size = size_base), ]
+test <- bank_base[-sample(seq_len(nrow(bank_base)), size = size_base), ]
+```
+
+__Create a decision tree__
+
+```{r}
+library(rpart)
+base_dt <- rpart(y ~ ., train)
+```
+
+```{r}
+printcp(base_dt)
+```
+
+```{r}
+plotcp(base_dt)
+```
+
+```{r}
+#optimal cp for baseline tree
+opt_index <- which.min(base_dt$cptable[, "xerror"])
+cp_opt <- base_dt$cptable[opt_index, "CP"]
+cp_opt
+```
+
+
+
+```{r}
+library(rpart.plot)
+rpart.plot(base_dt)
+```
+
+Make prediction on the test set
+
+```{r}
+test$BaseDT_Predict <- predict(base_dt, test[, 1:16], type = "class")
+```
+
+Compare the true y and the predicted y
+
+```{r}
+head(test[, 17:18])
+```
+
+
+### Expexrimental Models
+
+Build models with the features selected. Feature group 1: month + poutcome + contact + duration; Feature group 2: month + poutcome + contact + duration + job + housing + previous_bool
+
+Make a copy of bank. Create a new column "previous_bool" #18
+
+```{r}
+bank_exp <- bank_base
+#replace the orignal previous (numeric) with boolean
+bank_exp$previous <- as.factor(bank_exp$previous>0)
+```
+
+```{r}
+head(bank_exp)
+```
+
+
+For the models use the feature group 1, the training set and test set are the same as the base line model. For the models use the feature group 2, use the training and test set below:
+
+```{r}
+## 75% of the sample size
+size_exp <- floor(0.75 * nrow(bank_exp))
+
+## set the seed to make your partition reproducible
+set.seed(123)
+# sample(seq_len(nrow(bank)), size = size1) -> the index of training set
+train_exp <- bank_exp[sample(seq_len(nrow(bank_exp)), size = size_exp), ]
+test_exp <- bank_exp[-sample(seq_len(nrow(bank_exp)), size = size_exp), ]
+```
+
+
+The training set and test set are the same as in the baseline models because the seed is the same.
+
+__Decision Tree__
+
+cp  ydefault =0.01
+
+```{r}
+library(rpart)
+# decision tree with feature group 1
+tree1 <- rpart(y ~ month + poutcome + contact + duration, data = train)
+
+# decision tree with feature group 2, the "previous" is bool, but with the same name
+tree2 <- rpart(y ~ month + poutcome + contact + duration + job +
+                  housing + previous, data = train_exp)
+```
+
+
+get the optimal cp based on cross-validation error
+
+```{r}
+printcp(tree1)
+```
+
+```{r}
+plotcp(tree1)
+```
+
+
+```{r}
+printcp(tree2)
+```
+tree2 seems to be the same as baseline tree
+
+```{r}
+plotcp(tree2)
+```
+
+
+```{r}
+#optimal cp for tree1
+opt_index1 <- which.min(tree1$cptable[, "xerror"])
+cp_opt1 <- tree1$cptable[opt_index1, "CP"]
+
+#optimal cp for tree2
+opt_index2 <- which.min(tree2$cptable[, "xerror"])
+cp_opt2 <- tree2$cptable[opt_index2, "CP"]
+
+cp_opt1
+cp_opt2
+
+```
+
+
+```{r}
+library(rpart.plot)
+rpart.plot(tree1)
+rpart.plot(tree2)
+```
+
+Not all the input variables are used.
+
+Make prediction on the test set
+
+```{r}
+test$Tree1_Predict <- predict(tree1, test[, 1:16], type = "class")
+test_exp$Tree2_Predict <- predict(tree2, test_exp[, 1:16], type = "class")
+
+```
+
+Compare the true y and the predicted y
+
+```{r}
+head(test[, c(17, 19)])
+head(test_exp[, c(17, 18)])
+```
+
+__Random Forest__
+
+```{r}
+library(randomForest)
+# random forest with feature group 1
+forest1<- randomForest(y ~ month + poutcome + contact + duration, data = train)
+```
+
+
+```{r}
+library(randomForest)
+# random forest with feature group 2
+forest2<- randomForest(y ~ month + poutcome + contact + duration + job +
+                  housing + previous, data = train_exp)
+```
+
+runs long!
+
+Make prediction on test set
+
+
+```{r}
+library(randomForest)
+test$Forest1_Predict <- predict(forest1, test[, 1:16])
+test_exp$Forest2_Predict <- predict(forest2, test_exp[, 1:16])
+```
+
+
+### Evaluate the performance of the models
+ 
+__baseline decision tree__ 
+ 
+```{r}
+library(caret)
+cm_basedt <- confusionMatrix(test$BaseDT_Predict, test$y)
+cm_basedt
+```
+
+
+__experimental decision tree with feature group 1__
+
+```{r}
+library(caret)
+cm_tree1<-confusionMatrix(test$Tree1_Predict, test$y)
+cm_tree1
+```
+
+__experimental decision tree with feature group 2__
+
+```{r}
+library(caret)
+cm_tree2<-confusionMatrix(test_exp$Tree2_Predict, test_exp$y)
+cm_tree2
+```
+
+__experimental random forest with feature group 1__
+
+```{r}
+library(caret)
+cm_forest1<-confusionMatrix(test$Forest1_Predict, test$y)
+cm_forest1
+```
+
+__experimental random forest with feature group 2__
+
+```{r}
+library(caret)
+cm_forest2<-confusionMatrix(test_exp$Forest2_Predict, test_exp$y)
+cm_forest2
+```
+
+
+```{r}
+forest1$importance
+```
+
+```{r}
+forest2$importance
+```
+
+
+__ROC Curve__
+
+
+```{r}
+library('pROC')
+plot(roc(test$y, predict(base_dt, test[,1:16], type = "prob")[,2]), col="darkgoldenrod1 ", legacy.axes=T, xlab="False Positive Rate (1-Specificity)", ylab="True Positive Rate (Sensitivity)", main="Compare Models")
+plot(roc(test$y, predict(tree1, test[,1:16], type = "prob")[,2]), add=T, col="aquamarine")
+plot(roc(test_exp$y, predict(tree2, test_exp[,1:16], type = "prob")[,2]), add=T, col="coral")
+plot(roc(test$y, predict(forest1, test[,1:16], type = "prob")[,2]), add=T, col="chartreuse1")
+plot(roc(test_exp$y, predict(forest2, test_exp[,1:16], type = "prob")[,2]), add=T, col="purple")
+legend("bottomright", legend=c("Baseline Tree", "Tree1", "Tree2", "Forest1", "Forest2"),col=c("darkgoldenrod1", "aquamarine", "coral", "chartreuse1", "purple"), lwd=2)
+
+```
+
+Random Forest works better than Decision Tree. Feature group 2 is better than feature group 1. Decision tree with feature group 2 is the same as baseline decision tree. The two tree is exactly the same. Decision Tree with feature group 1 is slightly worse than baseline.
+
+
+```{r}
+cm <- c(cm_basedt$byClass[1], cm_tree1$byClass[1], cm_tree2$byClass[1], cm_forest1$byClass[1],
+        cm_forest2$byClass[1])
+cm_df <- data.frame(cm)
+cm_df$Model <- c("Baseline Tree", "Tree1", "Tree2", "Forest1", "Forest2")
+colnames(cm_df)<- c("Sensitivity", "Model")
+cm_df <- cm_df[, c(2,1)]
+cm_df
+```
+
+```{r}
+library(ggplot2)
+ggplot(data=cm_df, aes(x=reorder(Model, -Sensitivity), y=Sensitivity, fill=Model)) +
+  geom_bar(stat="identity")+ 
+  theme_classic() + ylab("Sensitivity") + xlab("Model") +
+  ggtitle("Compare Model Sensitivity") +
+  theme(plot.title = element_text(hjust = 0.5, size=14, face="bold"), 
+        axis.text.x = element_text(angle = 45, hjust = 1, face="bold", size=14))
+  
+
+```
+
+
+
+---------------------------------------------
+
+__ADD-ON: Create a baseline random forest__
+
+This will not go to report
+
+default ntree=500
+
+```{r}
+library(randomForest)
+base_rf1<- randomForest(y ~ ., data = train)
+```
+
+
+
+
+Make prediction on the test set
+
+```{r}
+test$BaseRF1_Predict <- predict(base_rf1, test[, 1:16], type = "class")
+```
+
+Compare the true y and the predicted y
+
+```{r}
+head(test[, c(17,19)])
+```
+
+ntree = 500
+
+```{r}
+library(caret)
+cm_baserf <- confusionMatrix(test$BaseRF1_Predict, test$y)
+cm_baserf
+```
+
+
